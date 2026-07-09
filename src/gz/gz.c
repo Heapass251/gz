@@ -168,6 +168,10 @@ static void main_hook(void)
   if (settings->cheats & (1 << CHEAT_NOHUD))
       z64_file.hud_flag = 0x001;
 
+  /* auto reload test */
+  if (z64_file.rupees != 9 && gz.state_buf[gz.state_slot])
+    command_loadstate();
+
   /* handle commands */
   for (int i = 0; i < COMMAND_MAX; ++i) {
     _Bool active = 0;
