@@ -11,8 +11,278 @@
 #include "z64.h"
 #include "zu.h"
 
-static _Bool            vcont_plugged[4];
+static _Bool vcont_plugged[4];
 static z64_controller_t vcont_raw[4];
+static _Bool backwalk_enabled;
+static int8_t backwalk_adjust_x;
+static int8_t backwalk_adjust_y;
+
+static int angle_finder_proc(struct menu_item *item,
+                             enum menu_callback_reason reason,
+                             void *data)
+{
+  if (reason == MENU_CALLBACK_SWITCH_ON)
+    gz.angle_enable = 1;
+  else if (reason == MENU_CALLBACK_SWITCH_OFF)
+    gz.angle_enable = 0;
+  else if (reason == MENU_CALLBACK_THINK) {
+    if (menu_checkbox_get(item) != gz.angle_enable)
+      menu_checkbox_set(item, gz.angle_enable);
+  }
+
+  return 0;
+}
+
+static int angle_desired_proc(struct menu_item *item,
+                              enum menu_callback_reason reason,
+                              void *data)
+{
+  if (reason == MENU_CALLBACK_CHANGED)
+    gz.angle_desired = menu_intinput_get(item);
+  else if (reason == MENU_CALLBACK_THINK) {
+    if (menu_intinput_gets(item) != gz.angle_desired)
+      menu_intinput_set(item, gz.angle_desired);
+  }
+
+  return 0;
+}
+
+static void angle_invert_proc(struct menu_item *item, void *data)
+{
+  gz.angle_desired = gz.angle_desired + 0x8000;
+}
+
+static void angle_match_player_proc(struct menu_item *item, void *data)
+{
+  z64_actor_t *player_actor = z64_game.actor_list[2].first;
+
+  if (player_actor != NULL)
+    gz.angle_desired = player_actor->rot_2.y;
+}
+
+static void angle_left_proc(struct menu_item *item, void *data)
+{
+  gz.angle_desired = gz.angle_desired + 0x4000;
+}
+
+static void angle_right_proc(struct menu_item *item, void *data)
+{
+  gz.angle_desired = gz.angle_desired - 0x4000;
+}
+
+static int angle_best_matching_proc(struct menu_item *item,
+                                    struct menu_draw_params *draw_params)
+{
+  struct gfx_font *font = draw_params->font;
+  int x = draw_params->x;
+  int y = draw_params->y;
+  uint16_t val;
+  uint32_t color = draw_params->color;
+  uint8_t alpha = draw_params->alpha;
+
+  gfx_mode_set(GFX_MODE_COLOR, GPACK_RGB24A8(color, alpha));
+
+  if (gz.angle_enable)
+    val = gz.angle_best_matching;
+  else
+    val = 0;
+
+  gfx_printf(font, x, y, "%04x", val);
+
+  return 1;
+}
+
+static int angle_x_proc(struct menu_item *item,
+                        struct menu_draw_params *draw_params)
+{
+  struct gfx_font *font = draw_params->font;
+  int x = draw_params->x;
+  int y = draw_params->y;
+  int16_t val;
+  uint32_t color = draw_params->color;
+  uint8_t alpha = draw_params->alpha;
+
+  gfx_mode_set(GFX_MODE_COLOR, GPACK_RGB24A8(color, alpha));
+
+  if (gz.angle_enable)
+    val = gz.angle_x;
+  else
+    val = 0;
+
+  gfx_printf(font, x, y, "%3i", val);
+
+  return 1;
+}
+
+static int angle_y_proc(struct menu_item *item,
+                        struct menu_draw_params *draw_params)
+{
+  struct gfx_font *font = draw_params->font;
+  int x = draw_params->x;
+  int y = draw_params->y;
+  int16_t val;
+  uint32_t color = draw_params->color;
+  uint8_t alpha = draw_params->alpha;
+
+  gfx_mode_set(GFX_MODE_COLOR, GPACK_RGB24A8(color, alpha));
+
+  if (gz.angle_enable)
+    val = gz.angle_y;
+  else
+    val = 0;
+
+  gfx_printf(font, x, y, "%3i", val);
+
+  return 1;
+}
+
+static int angle_use_min_proc(struct menu_item *item,
+                              enum menu_callback_reason reason,
+                              void *data)
+{
+  if (reason == MENU_CALLBACK_SWITCH_ON)
+    gz.angle_use_min = 1;
+  else if (reason == MENU_CALLBACK_SWITCH_OFF)
+    gz.angle_use_min = 0;
+  else if (reason == MENU_CALLBACK_THINK) {
+    if (menu_checkbox_get(item) != gz.angle_use_min)
+      menu_checkbox_set(item, gz.angle_use_min);
+  }
+
+  return 0;
+}
+
+static int angle_r_min_proc(struct menu_item *item,
+                            enum menu_callback_reason reason,
+                            void *data)
+{
+  uint8_t MAX_RADIUS = 84;
+
+  if (reason == MENU_CALLBACK_CHANGED) {
+    if (menu_intinput_get(item) > MAX_RADIUS) {
+      gz.angle_r_min = MAX_RADIUS;
+      menu_intinput_set(item, gz.angle_r_min);
+    }
+    else
+      gz.angle_r_min = menu_intinput_get(item);
+  }
+  else if (reason == MENU_CALLBACK_THINK) {
+    if (menu_intinput_get(item) > MAX_RADIUS) {
+      gz.angle_r_min = MAX_RADIUS;
+      menu_intinput_set(item, gz.angle_r_min);
+    }
+    else if (menu_intinput_get(item) != gz.angle_r_min)
+      menu_intinput_set(item, gz.angle_r_min);
+  }
+
+  return 0;
+}
+
+static int angle_use_input_proc(struct menu_item *item,
+                                enum menu_callback_reason reason,
+                                void *data)
+{
+  if (reason == MENU_CALLBACK_SWITCH_ON)
+    gz.angle_use_input = 1;
+  else if (reason == MENU_CALLBACK_SWITCH_OFF)
+    gz.angle_use_input = 0;
+  else if (reason == MENU_CALLBACK_THINK) {
+    if (menu_checkbox_get(item) != gz.angle_use_input)
+      menu_checkbox_set(item, gz.angle_use_input);
+  }
+
+  return 0;
+}
+
+static int backwalk_proc(struct menu_item *item,
+                         enum menu_callback_reason reason,
+                         void *data)
+{
+  if (reason == MENU_CALLBACK_SWITCH_ON)
+    backwalk_enabled = 1;
+  else if (reason == MENU_CALLBACK_SWITCH_OFF)
+    backwalk_enabled = 0;
+  else if (reason == MENU_CALLBACK_THINK) {
+    if (menu_checkbox_get(item) != backwalk_enabled)
+      menu_checkbox_set(item, backwalk_enabled);
+  }
+
+  return 0;
+
+}
+static int16_t backwalk_angle_error(int16_t a, int16_t b)
+{
+  int32_t d = (int32_t)a - (int32_t)b;
+
+  if (d > 0x8000)
+    d -= 0x10000;
+  else if (d < -0x8000)
+    d += 0x10000;
+
+  return (int16_t)d;
+}
+
+static void backwalk_optimize(int16_t target_angle,
+                              int8_t *out_x,
+                              int8_t *out_y)
+{
+  int16_t x;
+  int16_t y;
+  uint16_t found_angle;
+
+  /*
+   * Use Pancake's TAS-optimal analog lookup.
+   *
+   * find_best_analog() handles the camera-relative
+   * conversion internally, so target_angle here is
+   * Link's world rotation directly.
+   */
+  find_best_analog(&x, &y, &found_angle,
+                   target_angle, 0);
+
+  *out_x = (int8_t)x;
+  *out_y = (int8_t)y;
+}
+
+void gz_vcont_backwalk(void)
+{
+  z64_controller_t cont;
+  int16_t x;
+  int16_t y;
+
+  if (!backwalk_enabled) {
+    cont = vcont_raw[0];
+    cont.pad &= ~BUTTON_Z;
+    gz_vcont_set(0, vcont_plugged[0], &cont);
+    return;
+  }
+
+  int16_t angle = z64_link.common.rot_2.y + 0x8000;
+
+cont = vcont_raw[0];
+cont.pad |= BUTTON_Z;
+
+backwalk_optimize(angle, &cont.x, &cont.y);
+
+x = cont.x + backwalk_adjust_x;
+y = cont.y + backwalk_adjust_y;
+
+  if (x > 127)
+    x = 127;
+  else if (x < -127)
+    x = -127;
+
+  if (y > 127)
+    y = 127;
+  else if (y < -127)
+    y = -127;
+
+  cont.x = (int8_t)x;
+  cont.y = (int8_t)y;
+
+  gz_vcont_set(0, vcont_plugged[0], &cont);
+}
+
 
 static int pause_switch_proc(struct menu_item *item,
                              enum menu_callback_reason reason,
@@ -114,12 +384,15 @@ static int do_import_macro(const char *path, void *data)
   const char *s_memory = "out of memory";
   const char *err_str = NULL;
   int f = open(path, O_RDONLY);
+ 
   if (f != -1) {
     struct stat st;
     fstat(f, &st);
     int n;
     size_t n_input;
     size_t n_seed;
+   
+
     errno = 0;
     n = sizeof(n_input);
     if (read(f, &n_input, n) != n) {
@@ -655,14 +928,35 @@ static int vcont_joy_proc(struct menu_item *item,
   int port = (int)data / 2;
   int axis = (int)data % 2;
   int8_t *v = (axis == 0 ? &vcont_raw[port].x : &vcont_raw[port].y);
+
   if (reason == MENU_CALLBACK_CHANGED) {
-    *v = menu_intinput_gets(item);
-    gz_vcont_set(port, vcont_plugged[port], &vcont_raw[port]);
+    int8_t value = menu_intinput_gets(item);
+
+    if (port == 0 && backwalk_enabled) {
+      if (axis == 0)
+        backwalk_adjust_x = value;
+      else
+        backwalk_adjust_y = value;
+    }
+    else {
+      *v = value;
+      gz_vcont_set(port, vcont_plugged[port], &vcont_raw[port]);
+    }
   }
   else if (reason == MENU_CALLBACK_THINK) {
-    if (menu_intinput_gets(item) != *v)
-      menu_intinput_set(item, *v);
+    int8_t value;
+
+    if (port == 0 && backwalk_enabled) {
+      value = (axis == 0) ? backwalk_adjust_x : backwalk_adjust_y;
+    }
+    else {
+      value = *v;
+    }
+
+    if (menu_intinput_gets(item) != value)
+      menu_intinput_set(item, value);
   }
+
   return 0;
 }
 
@@ -722,13 +1016,16 @@ struct menu *gz_macro_menu(void)
 {
   static struct menu menu;
   static struct menu menu_settings;
+  static struct menu menu_tools;
   static struct menu menu_vcont;
   struct menu_item *item;
 
   /* initialize menus */
   menu_init(&menu, MENU_NOVALUE, MENU_NOVALUE, MENU_NOVALUE);
   menu_init(&menu_settings, MENU_NOVALUE, MENU_NOVALUE, MENU_NOVALUE);
+  menu_init(&menu_tools, MENU_NOVALUE, MENU_NOVALUE, MENU_NOVALUE);
   menu_init(&menu_vcont, MENU_NOVALUE, MENU_NOVALUE, MENU_NOVALUE);
+  
 
   /* load textures */
   struct gfx_texture *t_macro = resource_get(RES_ICON_MACRO);
@@ -805,13 +1102,17 @@ struct menu *gz_macro_menu(void)
   menu_add_static(&menu, 0, 15, "rerecords:", 0xC0C0C0);
   menu_add_watch(&menu, 11, 15, (uint32_t)&gz.movie_rerecords,
                  WATCH_TYPE_U32);
-  /* create settings controls */
+    /* create settings controls */
   menu_add_submenu(&menu, 0, 16, &menu_settings, "settings");
+
+  /* create tools controls */
+  menu_add_submenu(&menu, 0, 17, &menu_tools, "tools");
+
   /* create virtual controller controls */
-  menu_add_submenu(&menu, 0, 17, &menu_vcont, "virtual controller");
+  menu_add_submenu(&menu, 0, 18, &menu_vcont, "virtual controller");
+
   /* create tooltip */
   menu_add_tooltip(&menu, 8, 0, gz.menu_main, 0xC0C0C0);
-
   /* populate settings menu */
   menu_settings.selector = menu_add_submenu(&menu_settings, 0, 0, NULL,
                                             "return");
@@ -832,6 +1133,34 @@ struct menu *gz_macro_menu(void)
   menu_add_checkbox(&menu_settings, 2, 9, state_rng_proc, NULL);
   menu_add_static(&menu_settings, 4, 9, "ignore state's rng", 0xC0C0C0);
 
+  /* populate tools menu */
+  menu_tools.selector = menu_add_submenu(&menu_tools, 0, 0, NULL, "return");
+
+  menu_add_checkbox(&menu_tools, 0, 1, angle_finder_proc, NULL);
+  menu_add_static(&menu_tools, 2, 1, "angle finder", 0xC0C0C0);
+  menu_add_static(&menu_tools, 2, 2, "desired", 0xC0C0C0);
+  menu_add_intinput(&menu_tools, 11, 2, 16, 4,
+                    angle_desired_proc, NULL);
+  menu_add_button(&menu_tools, 16, 2, "invert", angle_invert_proc, NULL);
+  menu_add_button(&menu_tools, 24, 2, "player", angle_match_player_proc, NULL);
+  menu_add_button(&menu_tools, 11, 3, "left", angle_left_proc, NULL);
+  menu_add_button(&menu_tools, 16, 3, "right", angle_right_proc, NULL);
+  menu_add_static(&menu_tools, 2, 5, "closest", 0xC0C0C0);
+  menu_add_static_custom(&menu_tools, 11, 5,
+                         angle_best_matching_proc, NULL, 0xC0C0C0);
+  menu_add_static_custom(&menu_tools, 16, 5,
+                         angle_x_proc, NULL, 0xC0C0C0);
+  menu_add_static_custom(&menu_tools, 20, 5,
+                         angle_y_proc, NULL, 0xC0C0C0);
+  menu_add_static(&menu_tools, 2, 6, "min radius", 0xC0C0C0);
+  menu_add_checkbox(&menu_tools, 13, 6, angle_use_min_proc, NULL);
+  menu_add_intinput(&menu_tools, 16, 6, 10, 2,
+                    angle_r_min_proc, NULL);
+  menu_add_static(&menu_tools, 2, 7, "use input", 0xC0C0C0);
+  menu_add_checkbox(&menu_tools, 13, 7, angle_use_input_proc, NULL);
+
+  menu_add_checkbox(&menu_tools, 2, 9, backwalk_proc, NULL);
+  menu_add_static(&menu_tools, 4, 9, "backwalk", 0xC0C0C0);
   /* populate virtual pad menu */
   menu_vcont.selector = menu_add_submenu(&menu_vcont, 0, 0, NULL, "return");
   struct gfx_texture *t_buttons = resource_get(RES_ICON_BUTTONS);

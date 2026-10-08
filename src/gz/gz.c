@@ -22,6 +22,8 @@
 #include "z64.h"
 #include "zu.h"
 
+void gz_vcont_backwalk(void);
+void gz_angle_finder(void);
 __attribute__((section(".data")))
 struct gz gz =
 {
@@ -168,9 +170,18 @@ static void main_hook(void)
   if (settings->cheats & (1 << CHEAT_NOHUD))
       z64_file.hud_flag = 0x001;
 
-  /* auto reload test */
-  if (z64_file.rupees != 9 && gz.state_buf[gz.state_slot])
-    command_loadstate();
+  /* auto reload if rupee count is incorrect */
+  static _Bool auto_reload_active = 0;
+
+  if (z64_file.rupees != 9 && gz.state_buf[gz.state_slot]) {
+    if (!auto_reload_active) {
+      auto_reload_active = 1;
+      command_loadstate();
+    }
+  }
+  else {
+    auto_reload_active = 0;
+  }
 
   /* handle commands */
   for (int i = 0; i < COMMAND_MAX; ++i) {
@@ -193,6 +204,9 @@ static void main_hook(void)
     ;
   while (menu_think(gz.menu_global))
     ;
+
+  /* execute angle finder */
+  gz_angle_finder();
 
   /* update daytime after menu processing to avoid desync */
   if (gz.target_day_time != -1) {
@@ -614,12 +628,19 @@ HOOK void input_hook(void)
         }
       z64_UpdateCtxtInput(&z64_ctxt);
       mask_input(&zi[0]);
-      for (int i = 0; i < 4; ++i)
-        if (gz.vcont_enabled[i]) {
-          zi[i].raw = raw_save[i];
-          zi[i].status = status_save[i];
-          gz_vcont_get(i, &zi[i]);
-        }
+
+      gz_vcont_backwalk();
+
+      if (gz.angle_enable && gz.angle_use_input)
+        gz_angle_input_get(&zi[0]);
+      else {
+        for (int i = 0; i < 4; ++i)
+          if (gz.vcont_enabled[i]) {
+            zi[i].raw = raw_save[i];
+            zi[i].status = status_save[i];
+            gz_vcont_get(i, &zi[i]);
+          }
+      }
     }
     if (gz.movie_state == MOVIE_RECORDING) {
       /* clear rerecords for empty movies */

@@ -22,7 +22,7 @@ local fs = gru.z64fs_load_blob(rom)
 
 print("patching files")
 local patches = { gru.gsc_load("hooks/gz/" .. gz_version .. "/gz.gsc") }
-for _,v in pairs(rom_info.patches) do
+for _,v in pairs(rom_info.patches or {}) do
   patches[#patches + 1] = gru.gsc_load("gsc/" .. rom_info.data_dir .. "/" .. v .. ".gsc")
 end
 local do_hooks = loadfile("lua/hooks.lua")
