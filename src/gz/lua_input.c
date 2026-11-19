@@ -1,168 +1,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 #include <vector/vector.h>
 #include "files.h"
 #include "gfx.h"
 #include "gz.h"
 #include "lua_input.h"
+#include "lua_vm.h"
 #include "menu.h"
 #include "z64.h"
 #include "zu.h"
 
 /*
- * Reads BizHawk N64 Lua input scripts of the frame-by-frame kind, e.g.
+ * Input player shared by the lua and midi menus.
  *
- *   joypad.setfrommnemonicstr("|..|    0,    0,............u.....|")
- *   emu.frameadvance()
- *
- * This is not a Lua interpreter: only the statements listed in lua_input.h
- * are understood. Each emu.frameadvance() produces one macro frame using the
- * input from the last setfrommnemonicstr() since the previous advance (or no
- * input if there was none), which matches how BizHawk applies Lua input.
- *
- * BizHawk N64 mnemonic layout: "|<power,reset>|<x>,<y>,<18 buttons>|..."
- * Button order: A-Up A-Down A-Left A-Right, D-Up D-Down D-Left D-Right,
- * Start Z B A, C-Up C-Down C-Right C-Left, L R. '.' means not pressed.
+ * Lua scripts are run by the real Lua interpreter in lua_vm.c; while one is
+ * running, its input replaces the song player's for that frame. Songs (midi)
+ * are stored as segments and played back by the code below.
  */
-
-#define LINE_MAX_LEN      512
-#define N64_BUTTON_COUNT  18
-#define ANALOG_DIGITAL    80
-
-static char err_buf[80];
-
-static const char *set_err(int line, const char *msg)
-{
-  snprintf(err_buf, sizeof(err_buf), "line %i: %s", line, msg);
-  return err_buf;
-}
-
-static const char *skip_ws(const char *p)
-{
-  while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == ';')
-    ++p;
-  return p;
-}
-
-static int starts_with(const char *p, const char *word)
-{
-  return strncmp(p, word, strlen(word)) == 0;
-}
-
-static int clamp_axis(long v)
-{
-  if (v < -128)
-    return -128;
-  if (v > 127)
-    return 127;
-  return v;
-}
-
-/* parse a BizHawk N64 mnemonic string into a controller state */
-static const char *parse_mnemonic(const char *s, z64_controller_t *c)
-{
-  /* skip console section "|..|" */
-  if (*s != '|')
-    return "input string must start with '|'";
-  s = strchr(s + 1, '|');
-  if (!s)
-    return "bad input string";
-  ++s;
-
-  /* player 1 analog stick */
-  char *end;
-  long x = strtol(s, &end, 10);
-  if (end == s || *end != ',')
-    return "bad stick x value";
-  s = end + 1;
-  long y = strtol(s, &end, 10);
-  if (end == s || *end != ',')
-    return "bad stick y value";
-  s = end + 1;
-
-  /* player 1 buttons */
-  _Bool b[N64_BUTTON_COUNT];
-  int n = 0;
-  while (*s && *s != '|') {
-    if (n == N64_BUTTON_COUNT)
-      return "too many buttons (not an n64 script?)";
-    b[n++] = (*s != '.' && *s != ' ');
-    ++s;
-  }
-  if (n != N64_BUTTON_COUNT)
-    return "too few buttons (not an n64 script?)";
-
-  /* digital stick buttons override the analog value */
-  if (b[0])
-    y = ANALOG_DIGITAL;
-  if (b[1])
-    y = -ANALOG_DIGITAL;
-  if (b[2])
-    x = -ANALOG_DIGITAL;
-  if (b[3])
-    x = ANALOG_DIGITAL;
-
-  c->pad = 0;
-  c->x = clamp_axis(x);
-  c->y = clamp_axis(y);
-  c->du = b[4];
-  c->dd = b[5];
-  c->dl = b[6];
-  c->dr = b[7];
-  c->s  = b[8];
-  c->z  = b[9];
-  c->b  = b[10];
-  c->a  = b[11];
-  c->cu = b[12];
-  c->cd = b[13];
-  c->cr = b[14];
-  c->cl = b[15];
-  c->l  = b[16];
-  c->r  = b[17];
-  return NULL;
-}
-
-/* parse "(" "<string>" ")" and copy the string into buf */
-static const char *parse_string_arg(const char **pp, char *buf, size_t size)
-{
-  const char *p = skip_ws(*pp);
-  if (*p != '(')
-    return "expected '('";
-  p = skip_ws(p + 1);
-  char quote = *p;
-  if (quote != '"' && quote != '\'')
-    return "expected a quoted string";
-  ++p;
-  const char *q = strchr(p, quote);
-  if (!q)
-    return "unterminated string";
-  size_t len = q - p;
-  if (len >= size)
-    return "string too long";
-  memcpy(buf, p, len);
-  buf[len] = 0;
-  p = skip_ws(q + 1);
-  if (*p != ')')
-    return "expected ')'";
-  *pp = p + 1;
-  return NULL;
-}
-
-/* parse "(" ")" */
-static const char *parse_no_args(const char **pp)
-{
-  const char *p = skip_ws(*pp);
-  if (*p != '(')
-    return "expected '('";
-  p = skip_ws(p + 1);
-  if (*p != ')')
-    return "expected ')'";
-  *pp = p + 1;
-  return NULL;
-}
-
 
 const int lua_speeds[] = {25, 50, 75, 90, 100, 110, 125, 150, 175, 200, 300,
                           400};
@@ -175,11 +30,6 @@ static _Bool is_note(const z64_controller_t *c)
 static _Bool is_double_note(const z64_controller_t *c)
 {
   return is_note(c) && (c->r || c->z || c->x != 0 || c->y != 0);
-}
-
-static _Bool same_input(const z64_controller_t *a, const z64_controller_t *b)
-{
-  return a->pad == b->pad && a->x == b->x && a->y == b->y;
 }
 
 int lua_note_gap(const z64_controller_t *c)
@@ -302,6 +152,7 @@ void lua_song_start(struct lua_song *s)
   }
   if (lua_song_playing(s))
     return;
+  lua_vm_stop();
   /* if another song was playing, its last input is released next frame by
      the normal transition from pl_prev */
   lua_song_seek(s, 0);
@@ -351,6 +202,11 @@ static _Bool next_frame(void)
 void lua_player_update(void)
 {
   pl_prev = pl_cur;
+  /* a running lua script provides this frame's input */
+  if (lua_vm_frame(&pl_cur)) {
+    pl_active = 1;
+    return;
+  }
   if (pl_playing && next_frame()) {
     ++pl_pos;
     pl_active = 1;
@@ -387,205 +243,26 @@ void lua_player_apply(z64_input_t *input)
   }
 }
 
-/* ---- lua script loading --------------------------------------------------
- *
- * The script is stored as segments: runs of identical input with their
- * length in script frames, plus the note gap that follows. Lua scripts
- * play at their own speed (the midi player has a speed setting).
- */
-
-static struct lua_song  lua_script;
-
-struct emitter
-{
-  int               fill;
-  int               count;      /* segments emitted */
-  _Bool             have_run;
-  z64_controller_t  run;
-  int               run_len;
-};
-
-static const char *emit_seg(struct emitter *e)
-{
-  if (!e->have_run)
-    return NULL;
-  if (e->fill) {
-    struct lua_seg *g = vector_at(&lua_script.segs, e->count);
-    if (!g)
-      return "file changed while loading";
-    g->c = e->run;
-    g->len = e->run_len;
-    g->gap = lua_note_gap(&e->run);
-  }
-  ++e->count;
-  return NULL;
-}
-
-static const char *emit_frame(struct emitter *e, const z64_controller_t *c)
-{
-  if (e->have_run && same_input(&e->run, c)) {
-    ++e->run_len;
-    return NULL;
-  }
-  const char *err = emit_seg(e);
-  if (err)
-    return err;
-  e->run = *c;
-  e->run_len = 1;
-  e->have_run = 1;
-  return NULL;
-}
-
-/* Read the script once. If fill is 0, only validate and count segments.
-   If fill is 1, write segments into lua_script (already sized). */
-static int run_pass(const char *path, int fill, int *n_segs,
-                    const char **err_str)
-{
-  z64_controller_t pending;
-  struct emitter em;
-  int line_no = 0;
-  char *line = NULL;
-  char *arg = NULL;
-  memset(&em, 0, sizeof(em));
-  em.fill = fill;
-  memset(&pending, 0, sizeof(pending));
-
-  FILE *f = fopen(path, "r");
-  if (!f) {
-    *err_str = strerror(errno);
-    return -1;
-  }
-  line = malloc(LINE_MAX_LEN);
-  arg = malloc(LINE_MAX_LEN);
-  if (!line || !arg) {
-    *err_str = "out of memory";
-    goto fail;
-  }
-
-  while (fgets(line, LINE_MAX_LEN, f)) {
-    ++line_no;
-    if (!strchr(line, '\n') && !feof(f)) {
-      *err_str = set_err(line_no, "line too long");
-      goto fail;
-    }
-    const char *p = line;
-    while (1) {
-      p = skip_ws(p);
-      if (*p == 0 || starts_with(p, "--"))
-        break;
-      const char *e;
-      if (starts_with(p, "joypad.setfrommnemonicstr")) {
-        p += strlen("joypad.setfrommnemonicstr");
-        e = parse_string_arg(&p, arg, LINE_MAX_LEN);
-        if (!e)
-          e = parse_mnemonic(arg, &pending);
-      }
-      else if (starts_with(p, "emu.frameadvance")) {
-        p += strlen("emu.frameadvance");
-        e = parse_no_args(&p);
-        if (!e) {
-          e = emit_frame(&em, &pending);
-          memset(&pending, 0, sizeof(pending));
-        }
-      }
-      else if (starts_with(p, "emu.yield")) {
-        /* yield does not advance a frame in BizHawk; accept and ignore */
-        p += strlen("emu.yield");
-        e = parse_no_args(&p);
-      }
-      else
-        e = "unsupported lua statement";
-      if (e) {
-        *err_str = set_err(line_no, e);
-        goto fail;
-      }
-    }
-  }
-  if (ferror(f)) {
-    *err_str = strerror(errno);
-    goto fail;
-  }
-  /* close the last run */
-  {
-    const char *e = emit_seg(&em);
-    if (e) {
-      *err_str = e;
-      goto fail;
-    }
-  }
-
-  free(line);
-  free(arg);
-  fclose(f);
-  *n_segs = em.count;
-  return 0;
-
-fail:
-  if (line)
-    free(line);
-  if (arg)
-    free(arg);
-  fclose(f);
-  return -1;
-}
-
-int lua_input_load(const char *path, const char **err_str)
-{
-  int n_segs;
-
-  /* first pass: validate the whole script before replacing the old one */
-  if (run_pass(path, 0, &n_segs, err_str))
-    return -1;
-  if (n_segs == 0) {
-    *err_str = "script has no emu.frameadvance()";
-    return -1;
-  }
-
-  lua_song_init(&lua_script, NULL);
-  lua_song_clear(&lua_script);
-  if (!vector_reserve(&lua_script.segs, n_segs) ||
-      !vector_insert(&lua_script.segs, 0, n_segs, NULL))
-  {
-    lua_song_clear(&lua_script);
-    *err_str = "out of memory";
-    return -1;
-  }
-
-  /* second pass: fill in the segments */
-  int n_filled = 0;
-  if (run_pass(path, 1, &n_filled, err_str)) {
-    lua_song_clear(&lua_script);
-    return -1;
-  }
-  if (n_filled != n_segs) {
-    lua_song_clear(&lua_script);
-    *err_str = "file changed while loading";
-    return -1;
-  }
-  return 0;
-}
+/* ---- lua menu ------------------------------------------------------------ */
 
 void command_playlua(void)
 {
-  lua_song_toggle(&lua_script);
+  lua_vm_toggle();
 }
-
-/* ---- lua menu ------------------------------------------------------------ */
-
-static char lua_name[32];
 
 static int do_import_lua(const char *path, void *data)
 {
   const char *err_str = NULL;
-  if (lua_input_load(path, &err_str)) {
-    menu_prompt(gz.menu_main, err_str, "return\0", 0, NULL, NULL);
+  if (lua_vm_load(path, &err_str)) {
+    gz_log("lua load failed:");
+    gz_log("%.38s", err_str);
+    if (strlen(err_str) > 38)
+      gz_log("%.38s", err_str + 38);
+    menu_prompt(gz.menu_main, "lua load failed, see log", "return\0", 0,
+                NULL, NULL);
     return 1;
   }
-  const char *base = strrchr(path, '/');
-  base = base ? base + 1 : path;
-  strncpy(lua_name, base, sizeof(lua_name) - 1);
-  lua_name[sizeof(lua_name) - 1] = 0;
-  gz_log("lua loaded: %i frames", lua_song_frames(&lua_script));
+  gz_log("lua loaded: %s", lua_vm_name());
   return 0;
 }
 
@@ -597,7 +274,7 @@ static void import_lua_proc(struct menu_item *item, void *data)
 
 static void play_lua_proc(struct menu_item *item, void *data)
 {
-  lua_song_toggle(&lua_script);
+  lua_vm_toggle();
 }
 
 static int lua_status_draw_proc(struct menu_item *item,
@@ -609,14 +286,22 @@ static int lua_status_draw_proc(struct menu_item *item,
   int y = draw_params->y;
   gfx_mode_set(GFX_MODE_COLOR, GPACK_RGB24A8(draw_params->color,
                                              draw_params->alpha));
-  if (lua_song_count(&lua_script) == 0) {
+  if (!lua_vm_loaded()) {
     gfx_printf(font, x, y, "no lua loaded");
     return 1;
   }
-  gfx_printf(font, x, y, "%s", lua_name);
-  gfx_printf(font, x, y + ch, "%s %i / %i",
-             lua_song_playing(&lua_script) ? "playing" : "stopped",
-             lua_song_pos(&lua_script), lua_song_frames(&lua_script));
+  gfx_printf(font, x, y, "%s", lua_vm_name());
+  gfx_printf(font, x, y + ch, "%s, frame %i", lua_vm_status(),
+             lua_vm_frames());
+  /* show the error wrapped over a few lines */
+  const char *err = lua_vm_error();
+  if (err) {
+    const int w = 32;
+    for (int i = 0; i < 4 && *err; ++i) {
+      gfx_printf(font, x, y + ch * (2 + i), "%.*s", w, err);
+      err += strlen(err) < w ? strlen(err) : w;
+    }
+  }
   return 1;
 }
 
@@ -627,9 +312,9 @@ struct menu *gz_lua_menu(void)
   menu_init(&menu, MENU_NOVALUE, MENU_NOVALUE, MENU_NOVALUE);
   menu.selector = menu_add_submenu(&menu, 0, 0, NULL, "return");
   item = menu_add_button(&menu, 0, 2, "import lua", import_lua_proc, NULL);
-  item->tooltip = "load a bizhawk lua file";
-  item = menu_add_button(&menu, 0, 3, "play/stop lua", play_lua_proc, NULL);
-  item->tooltip = "plays over controller 1";
+  item->tooltip = "load a bizhawk lua script";
+  item = menu_add_button(&menu, 0, 3, "run/stop lua", play_lua_proc, NULL);
+  item->tooltip = "adds its input to controller 1";
   menu_add_static_custom(&menu, 0, 5, lua_status_draw_proc, NULL, 0xC0C0C0);
   menu_add_tooltip(&menu, 8, 0, gz.menu_main, 0xC0C0C0);
   return &menu;

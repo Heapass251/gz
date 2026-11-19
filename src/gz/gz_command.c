@@ -5,6 +5,7 @@
 #include <string.h>
 #include "gfx.h"
 #include "gz.h"
+#include "lua_input.h"
 #include "menu.h"
 #include "resource.h"
 #include "settings.h"
@@ -50,6 +51,7 @@ struct command_info command_info[COMMAND_MAX] =
   {"start timer",       command_starttimer,    CMDACT_PRESS_ONCE},
   {"stop timer",        command_stoptimer,     CMDACT_PRESS_ONCE},
   {"reset",             command_reset,         CMDACT_PRESS_ONCE},
+  {"play/stop lua",     command_playlua,       CMDACT_PRESS_ONCE},
 };
 
 void gz_apply_settings()

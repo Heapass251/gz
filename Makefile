@@ -37,7 +37,7 @@ OBJDIR                = obj
 BINDIR                = bin
 HOOKDIR               = hooks
 ASMFILES              = *.S
-CFILES                = *.c
+CFILES                = *.c lua/*.c
 CXXFILES              = *.cpp *.cxx *.cc *.c++
 
 OBJ-OOT-1.0           = $(OBJ-gz-oot-1.0) $(OBJ-gz-oot-1.0-vc)
@@ -117,6 +117,7 @@ $$(ELF-$(1))          : $$(OBJ-$(1)) | $$(BINDIR-$(1))
 $$(ASMOBJ-$(1))       : $$(OBJDIR-$(1))/%.o: $$(SRCDIR-$(1))/% | $$(OBJDIR-$(1))
 	$$(CCAS) -c -MMD -MP $$(ALL_CPPFLAGS) $$< -o $$@
 $$(COBJ-$(1))         : $$(OBJDIR-$(1))/%.o: $$(SRCDIR-$(1))/% | $$(OBJDIR-$(1))
+	@mkdir -p $$(@D)
 	$$(CC) -c -MMD -MP $$(ALL_CPPFLAGS) $$(ALL_CFLAGS) $$< -o $$@
 $$(CXXOBJ-$(1))       : $$(OBJDIR-$(1))/%.o: $$(SRCDIR-$(1))/% | $$(OBJDIR-$(1))
 	$$(CXX) -c -MMD -MP $$(ALL_CPPFLAGS) $$(ALL_CXXFLAGS) $$< -o $$@
@@ -185,6 +186,9 @@ $(OBJ-VC)             : ALL_CFLAGS           += -fno-reorder-blocks -fno-optimiz
 $(OBJ-VC)             : ALL_CXXFLAGS         += -fno-reorder-blocks -fno-optimize-sibling-calls
 $(ELF-VC)             : ALL_LDFLAGS          += -fno-reorder-blocks -fno-optimize-sibling-calls
 endif
+
+# wii vc roms can't grow past 32 MiB, so gz is stored compressed (see ldr.S)
+$(OBJ-VC)             : ALL_CPPFLAGS         += -DGZ_PACKED
 
 $(OBJ-N64)            : CFLAGS               ?= -O2 -g -flto=auto
 $(OBJ-N64)            : CXXFLAGS             ?= -O2 -g -flto=auto

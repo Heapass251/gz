@@ -12,6 +12,7 @@
 #include "gu.h"
 #include "gz.h"
 #include "lua_input.h"
+#include "lua_vm.h"
 #include "input.h"
 #include "io.h"
 #include "menu.h"
@@ -450,6 +451,9 @@ static void main_hook(void)
 #undef STRINGIFY
 #undef STRINGIFY_
   }
+
+  /* draw lua gui.text() output */
+  lua_vm_draw(font, alpha);
 
   /* draw log */
   for (int i = SETTINGS_LOG_MAX - 1; i >= 0; --i) {

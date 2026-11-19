@@ -53,15 +53,8 @@ void          lua_song_seek(struct lua_song *s, int pos);
 void          lua_player_update(void);  /* once per game frame, first */
 void          lua_player_apply(z64_input_t *input);  /* merge into input */
 
-/* Load a BizHawk-style Lua input script.
-   Supported statements (anything else is an error):
-     joypad.setfrommnemonicstr("|..|    0,    0,..................|")
-     emu.frameadvance()
-     emu.yield()
-     -- comments, blank lines, semicolons
-   Returns 0 on success. On failure returns -1 and sets *err_str to a
-   message (pointing to static storage). */
-int           lua_input_load(const char *path, const char **err_str);
+/* lua scripts themselves are run by lua_vm.c; while one is running,
+   lua_player_update() takes its input instead of the song's */
 void          command_playlua(void);
 struct menu  *gz_lua_menu(void);
 
