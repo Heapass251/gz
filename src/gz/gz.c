@@ -11,6 +11,7 @@
 #include "gfx.h"
 #include "gu.h"
 #include "gz.h"
+#include "lua_input.h"
 #include "input.h"
 #include "io.h"
 #include "menu.h"
@@ -169,19 +170,6 @@ static void main_hook(void)
     z64_textbox_skipped = 1;
   if (settings->cheats & (1 << CHEAT_NOHUD))
       z64_file.hud_flag = 0x001;
-
-  /* auto reload if rupee count is incorrect */
-  static _Bool auto_reload_active = 0;
-
-  if (z64_file.rupees != 9 && gz.state_buf[gz.state_slot]) {
-    if (!auto_reload_active) {
-      auto_reload_active = 1;
-      command_loadstate();
-    }
-  }
-  else {
-    auto_reload_active = 0;
-  }
 
   /* handle commands */
   for (int i = 0; i < COMMAND_MAX; ++i) {
@@ -617,6 +605,8 @@ HOOK void input_hook(void)
   else if (gz.frames_queued != 0) {
     z64_input_t di = z64_input_direct;
     z64_input_t *zi = z64_ctxt.input;
+    /* advance the lua player; its input is added after macros below */
+    lua_player_update();
     {
       z64_controller_t raw_save[4];
       uint16_t status_save[4];
@@ -642,6 +632,11 @@ HOOK void input_hook(void)
           }
       }
     }
+    /* add lua player input before macro recording so it gets recorded;
+       during macro playback it is added after the macro input instead */
+    _Bool lua_after_macro = (gz.movie_state == MOVIE_PLAYING);
+    if (!lua_after_macro)
+      lua_player_apply(&zi[0]);
     if (gz.movie_state == MOVIE_RECORDING) {
       /* clear rerecords for empty movies */
       if (gz.movie_frame == 0 && gz.movie_input.size == 0) {
@@ -694,6 +689,8 @@ HOOK void input_hook(void)
           gz.reset_flag = reset;
       }
     }
+    if (lua_after_macro)
+      lua_player_apply(&zi[0]);
   }
 }
 
@@ -957,6 +954,11 @@ HOOK void ocarina_input_hook(void *a0, z64_input_t *input, int a2)
   z64_GetInput(a0, input, a2);
   if (gz.ready)
     mask_input(input);
+  /* the ocarina reads the controller directly, so add lua input here too:
+     before macro recording (so it is recorded), after macro playback */
+  _Bool lua_after_macro = (gz.movie_state == MOVIE_PLAYING);
+  if (gz.ready && !lua_after_macro)
+    lua_player_apply(input);
   if (gz.ready && gz.movie_state != MOVIE_IDLE && gz.movie_frame > 0) {
     /* if recording, use the sync hack setting to decide the input to use */
     if (gz.movie_state == MOVIE_RECORDING) {
@@ -1000,6 +1002,8 @@ HOOK void ocarina_input_hook(void *a0, z64_input_t *input, int a2)
       }
     }
   }
+  if (gz.ready && lua_after_macro)
+    lua_player_apply(input);
 }
 
 HOOK uint32_t afx_rand_hook(void)
@@ -1228,6 +1232,8 @@ static void init(void)
     menu_add_submenu(&menu, 0, 8, &watches, "watches");
     menu_add_submenu(&menu, 0, 9, gz_debug_menu(), "debug");
     menu_add_submenu(&menu, 0, 10, gz_settings_menu(), "settings");
+    menu_add_submenu(&menu, 0, 11, gz_lua_menu(), "lua");
+    menu_add_submenu(&menu, 0, 12, gz_midi_menu(), "midi");
 
     /* populate watches menu */
     watches.selector = menu_add_submenu(&watches, 0, 0, NULL, "return");

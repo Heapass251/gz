@@ -252,7 +252,6 @@ void gz_vcont_backwalk(void)
 
   if (!backwalk_enabled) {
     cont = vcont_raw[0];
-    cont.pad &= ~BUTTON_Z;
     gz_vcont_set(0, vcont_plugged[0], &cont);
     return;
   }
@@ -406,9 +405,18 @@ static int do_import_macro(const char *path, void *data)
     }
     vector_clear(&gz.movie_input);
     vector_clear(&gz.movie_seed);
-    if (!vector_reserve(&gz.movie_input, n_input) ||
-        !vector_reserve(&gz.movie_seed, n_seed))
-    {
+    fprintf(stderr, "GZM import: inputs=%zu seeds=%zu\n",
+            n_input, n_seed);
+
+    if (!vector_reserve(&gz.movie_input, n_input)) {
+      fprintf(stderr, "GZM import: movie_input allocation failed; count=%zu, element_size=%zu\n",
+              n_input, gz.movie_input.element_size);
+      err_str = s_memory;
+      goto error;
+    }
+    if (!vector_reserve(&gz.movie_seed, n_seed)) {
+      fprintf(stderr, "GZM import: movie_seed allocation failed; count=%zu, element_size=%zu\n",
+              n_seed, gz.movie_seed.element_size);
       err_str = s_memory;
       goto error;
     }
